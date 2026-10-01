@@ -1,0 +1,260 @@
+#!/data/data/com.termux/files/usr/bin/python
+# ============================================================
+#  V4Z IP SCANNER — Network Intelligence & Port Scanner
+#  by V4Z RASHD
+#  Repo: https://github.com/v4zrashd/RASHDIPScannerTermuxx
+#  Channel: https://t.me/rashdteem
+#
+#  100% original code. Python standard library only.
+#  For educational & authorized security testing only.
+# ============================================================
+import ipaddress
+import re
+import socket
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+R = "\033[0;31m"; G = "\033[0;32m"; Y = "\033[1;33m"
+C = "\033[0;36m"; M = "\033[0;35m"; W = "\033[1;37m"; N = "\033[0m"
+
+COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 465, 587,
+                993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 27017]
+
+PORT_NAMES = {21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
+              80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS",
+              465: "SMTPS", 587: "SMTP", 993: "IMAPS", 995: "POP3S",
+              3306: "MySQL", 3389: "RDP", 5432: "PostgreSQL",
+              6379: "Redis", 8080: "HTTP-Alt", 8443: "HTTPS-Alt",
+              27017: "MongoDB"}
+
+
+def banner():
+    print(f"{M}{W}")
+    print("  ╔══════════════════════════════════════╗")
+    print("  ║                                      ║")
+    print("  ║        🛡️  V4Z IP SCANNER  🛡️        ║")
+    print("  ║     Network Intelligence Tool        ║")
+    print("  ║                                      ║")
+    print("  ║           by V4Z RASHD               ║")
+    print("  ║                                      ║")
+    print("  ╚══════════════════════════════════════╝")
+    print(f"{N}")
+    print(f"  📢 Telegram: {C}https://t.me/rashdteem{N}")
+    print(f"  {R}⚠️  Educational & authorized testing only{N}\n")
+
+
+def resolve_domain(domain):
+    domain = domain.strip().lower()
+    for prefix in ("http://", "https://", "www."):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    domain = domain.split("/")[0]
+    return domain, socket.gethostbyname(domain)
+
+
+def reverse_dns(ip):
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return "—"
+
+
+def grab_http(ip, port, timeout=5):
+    """Return (server_header, page_title) from an HTTP(S) port."""
+    server, title = "—", "—"
+    try:
+        s = socket.create_connection((ip, port), timeout=timeout)
+        s.settimeout(timeout)
+        s.sendall(f"GET / HTTP/1.0\r\nHost: {ip}\r\nUser-Agent: V4Z-Scanner\r\n\r\n".encode())
+        data = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > 32768 or b"</title>" in data.lower():
+                    break
+        except socket.timeout:
+            pass
+        s.close()
+        text = data.decode("utf-8", "replace")
+        head, _, _ = text.partition("\r\n\r\n")
+        m = re.search(r"(?im)^server:\s*(.+)$", head)
+        if m:
+            server = m.group(1).strip()[:60]
+        m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:80] or "—"
+    except Exception:
+        pass
+    return server, title
+
+
+def is_open(ip, port, timeout=1.0):
+    try:
+        s = socket.create_connection((ip, port), timeout=timeout)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def show_target_info(label, ip):
+    host = reverse_dns(ip)
+    print(f"\n  {W}🎯 Target:{N} {C}{label}{N}")
+    print(f"  {W}🌐 IP:{N} {ip}")
+    print(f"  {W}🧠 Hostname:{N} {host}\n")
+
+
+def domain_info():
+    domain = input(f"  {Y}Enter domain (e.g. example.com) › {N}").strip()
+    if not domain:
+        return
+    try:
+        clean, ip = resolve_domain(domain)
+    except Exception as e:
+        print(f"  {R}❌ Could not resolve: {e}{N}\n")
+        return
+    show_target_info(clean, ip)
+    print(f"  {W}🔍 Quick port check...{N}")
+    found = []
+    with ThreadPoolExecutor(max_workers=40) as ex:
+        results = ex.map(lambda p: (p, is_open(ip, p, 1.5)), COMMON_PORTS)
+    for port, open_ in results:
+        if open_:
+            name = PORT_NAMES.get(port, "")
+            found.append(port)
+            extra = ""
+            if port in (80, 8080, 443, 8443):
+                server, title = grab_http(ip, port)
+                extra = f"  {C}Server:{N} {server}  {C}Title:{N} {title}"
+            print(f"    {G}● OPEN{N} {W}{port}{N} {M}{name}{N}{extra}")
+    if not found:
+        print(f"    {Y}No common ports open.{N}")
+    save = input(f"\n  {Y}Save to file? (y/n) › {N}").strip().lower()
+    if save == "y":
+        with open("v4zscan_result.txt", "a") as f:
+            f.write(f"[domain] {clean} -> {ip} | open: {found}\n")
+        print(f"  {G}✓ Saved to v4zscan_result.txt{N}")
+    print()
+
+
+def range_scan():
+    cidr = input(f"  {Y}Enter CIDR (e.g. 192.168.1.0/24) › {N}").strip()
+    if not cidr:
+        return
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except Exception as e:
+        print(f"  {R}❌ Bad CIDR: {e}{N}\n")
+        return
+    hosts = list(net.hosts())
+    if len(hosts) > 1024:
+        print(f"  {R}❌ Too many hosts ({len(hosts)}). Max /22 (1024).{N}\n")
+        return
+    print(f"\n  {W}📡 Scanning {len(hosts)} hosts...{N}\n")
+
+    def check_host(ip):
+        ip = str(ip)
+        for port in (80, 443, 8080, 22):
+            if is_open(ip, port, 1.0):
+                return ip, port
+        return ip, None
+
+    live = []
+    try:
+        with ThreadPoolExecutor(max_workers=200) as ex:
+            for ip, port in ex.map(check_host, hosts):
+                if port:
+                    live.append((ip, port))
+                    server, title = ("—", "—")
+                    if port in (80, 8080, 443):
+                        server, title = grab_http(ip, port)
+                    host = reverse_dns(ip)
+                    print(f"  {G}● {ip}{N}  {W}port {port}{N}  host: {host}")
+                    print(f"    {C}Server:{N} {server}  {C}Title:{N} {title}")
+    except KeyboardInterrupt:
+        print(f"\n  {Y}⏹ Stopped by user.{N}")
+    print(f"\n  {G}✓ Done — {len(live)} live host(s).{N}")
+    if live:
+        with open("v4zscan_result.txt", "a") as f:
+            for ip, port in live:
+                f.write(f"[range] {ip}:{port}\n")
+        print(f"  {G}✓ Saved to v4zscan_result.txt{N}\n")
+
+
+def port_scan(deep):
+    ip_in = input(f"  {Y}Enter IP or domain › {N}").strip()
+    if not ip_in:
+        return
+    try:
+        try:
+            ipaddress.ip_address(ip_in)
+            ip, label = ip_in, ip_in
+        except ValueError:
+            label, ip = resolve_domain(ip_in)
+    except Exception as e:
+        print(f"  {R}❌ Bad target: {e}{N}\n")
+        return
+
+    if deep:
+        ports = range(1, 65536)
+        workers, timeout = 300, 0.8
+        print(f"\n  {W}⚡ Deep scan {ip} — all 65535 ports (CTRL+C to stop)...{N}\n")
+    else:
+        ports = COMMON_PORTS
+        workers, timeout = 40, 1.5
+        print(f"\n  {W}🔍 Quick scan {ip} — {len(ports)} common ports...{N}\n")
+
+    open_ports = []
+    t0 = time.time()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for port, open_ in ex.map(lambda p: (p, is_open(ip, p, timeout)), ports):
+                if open_:
+                    open_ports.append(port)
+                    name = PORT_NAMES.get(port, "")
+                    print(f"  {G}● OPEN{N} {W}{port}{N} {M}{name}{N}")
+    except KeyboardInterrupt:
+        print(f"\n  {Y}⏹ Stopped by user.{N}")
+    dt = time.time() - t0
+    print(f"\n  {G}✓ Done in {dt:.1f}s — {len(open_ports)} open port(s).{N}")
+    if open_ports:
+        with open("v4zscan_result.txt", "a") as f:
+            f.write(f"[ports] {label} ({ip}) open: {open_ports}\n")
+        print(f"  {G}✓ Saved to v4zscan_result.txt{N}")
+    print()
+
+
+def main():
+    banner()
+    while True:
+        print(f"  {C}[1]{N} Domain → IP + Info")
+        print(f"  {C}[2]{N} IP Range Scan (CIDR)")
+        print(f"  {C}[3]{N} Quick Port Scan (common ports)")
+        print(f"  {C}[4]{N} Deep Port Scan (1–65535 ⚡)")
+        print(f"  {C}[5]{N} Exit\n")
+        try:
+            choice = input(f"  {Y}Choose › {N}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{G}Bye! — V4Z RASHD{N}")
+            break
+        if choice == "1":
+            domain_info()
+        elif choice == "2":
+            range_scan()
+        elif choice == "3":
+            port_scan(deep=False)
+        elif choice == "4":
+            port_scan(deep=True)
+        elif choice == "5":
+            print(f"{G}Bye! — V4Z RASHD{N}")
+            break
+        else:
+            print(f"  {R}Invalid choice.{N}\n")
+
+
+if __name__ == "__main__":
+    main()
